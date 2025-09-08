@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
     HashRouter as Router,
     Routes,
@@ -9,625 +9,457 @@ import {
     useLocation,
 } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
+
+// --- Material-UI Imports ---
 import {
-    Container,
-    Typography,
-    TextField,
-    Button,
-    Box,
-    Paper,
-    AppBar,
-    Toolbar,
-    Link,
-    Grid,
-    IconButton,
-    Table,
-    TableBody,
-    TableCell,
-    TableContainer,
-    TableHead,
-    TableRow,
-    TableSortLabel,
-    Alert,
-    Collapse,
-    CircularProgress,
+    Container, Typography, TextField, Button, Box, Paper, AppBar, Toolbar, Link,
+    Grid, IconButton, Table, TableBody, TableCell, TableContainer, TableHead,
+    TableRow, TableSortLabel, Collapse, CircularProgress, Snackbar, Alert, Tooltip,
 } from '@mui/material';
 import { createTheme, ThemeProvider } from '@mui/material/styles';
-import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
-import DeleteIcon from '@mui/icons-material/Delete';
-import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import {
+    AddCircleOutline as AddCircleOutlineIcon,
+    DeleteOutline as DeleteIcon,
+    ContentCopy as ContentCopyIcon,
+    ExpandMore as ExpandMoreIcon,
+} from '@mui/icons-material';
+import { motion, AnimatePresence } from 'framer-motion';
 
 // --- Custom Logging Middleware (Mandatory Requirement) ---
-// This logger sends log data to the specified external API endpoint.
-const loggingMiddleware = {
-    log: (level, pkg, message) => {
+// This service is responsible for sending logs to the external server.
+const loggingService = {
+    log: async (level, pkg, message) => {
         const LOG_API_URL = 'http://20.244.56.144/evaluation-service/logs';
-        
-        // Ensure message is a string to avoid issues with JSON.stringify
-        const processedMessage = typeof message === 'object' ? JSON.stringify(message) : String(message);
-
-        const payload = {
-            stack: 'frontend', // This is a frontend application
-            level: level,
+        const logPayload = {
+            stack: 'frontend',
+            level,
             package: pkg,
-            message: processedMessage,
+            message: typeof message === 'object' ? JSON.stringify(message) : String(message),
         };
 
-        // --- DEVELOPMENT FIX ---
-        // The fetch call is commented out because it was causing network errors,
-        // likely due to CORS restrictions on the test server or a network issue.
-        // The app will now log structured data to the console instead to prevent errors.
-        console.log('[LOGGING MIDDLEWARE]', payload);
+        try {
+            const response = await fetch(LOG_API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(logPayload),
+            });
 
-        /* --- ORIGINAL API CALL (DISABLED DUE TO NETWORK ERRORS) ---
-        (async () => {
-            try {
-                const response = await fetch(LOG_API_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(payload),
-                });
-
-                if (!response.ok) {
-                    const errorBody = await response.text();
-                    console.error(
-                        `Logging API Error: ${response.status} ${response.statusText}`,
-                        { requestPayload: payload, errorBody: errorBody }
-                    );
-                } else {
-                    const result = await response.json();
-                    console.log(`Log sent successfully. Log ID: ${result.logID}`);
-                }
-            } catch (error) {
-                console.error('Failed to send log to API due to a network or other error:', {
-                    requestPayload: payload,
-                    error: error,
-                });
+            if (!response.ok) {
+                // This console log is a fallback for developers to debug the logger itself
+                // if the API endpoint fails, as per the guidelines.
+                const errorBody = await response.text();
+                console.log(`[Logger Error] API call failed: ${response.status}`, { logPayload, errorBody });
             }
-        })();
-        */
-    },
-    // Helper methods for different log levels
-    info: (pkg, message) => loggingMiddleware.log('info', pkg, message),
-    warn: (pkg, message) => loggingMiddleware.log('warn', pkg, message),
-    error: (pkg, message, errorObj) => {
-        let errorMessage = message;
-        if (errorObj) {
-            // Append error details to the message for more context
-            errorMessage += ` | Details: ${errorObj.toString()}`;
+        } catch (error) {
+            console.log('[Logger Error] Failed to send log due to network error:', { logPayload, error });
         }
-        loggingMiddleware.log('error', pkg, errorMessage);
+    },
+    info: (pkg, message) => loggingService.log('info', pkg, message),
+    warn: (pkg, message) => loggingService.log('warn', pkg, message),
+    error: (pkg, message, errorObj) => {
+        const errorMessage = errorObj ? `${message} | Details: ${errorObj.toString()}` : message;
+        loggingService.log('error', pkg, errorMessage);
     },
 };
 
 // --- URL Management Service ---
-// Handles all interactions with localStorage to keep components clean.
-const URL_STORAGE_KEY = 'url_shortener_data';
-
-const urlService = {
-    getAllMappings: () => {
+// A dedicated service to handle all interactions with localStorage.
+const URL_STORAGE_KEY = 'shortener_links';
+const urlPersistenceService = {
+    // Fetches all link mappings from local storage.
+    getAll: () => {
         try {
             const data = localStorage.getItem(URL_STORAGE_KEY);
             const mappings = data ? JSON.parse(data) : [];
-            loggingMiddleware.info('api', `Retrieved ${mappings.length} URL mappings from localStorage.`);
+            loggingService.info('storage', `Retrieved ${mappings.length} mappings.`);
             return mappings;
         } catch (e) {
-            loggingMiddleware.error('api', 'Failed to parse URL mappings from localStorage.', e);
+            loggingService.error('storage', 'Failed to parse mappings from localStorage.', e);
             return [];
         }
     },
-    saveAllMappings: (mappings) => {
+    // Saves the entire list of mappings.
+    saveAll: (mappings) => {
         try {
             localStorage.setItem(URL_STORAGE_KEY, JSON.stringify(mappings));
-            loggingMiddleware.info('api', `Successfully saved ${mappings.length} URL mappings to localStorage.`);
+            loggingService.info('storage', `Saved ${mappings.length} mappings.`);
         } catch (e) {
-            loggingMiddleware.error('api', 'Failed to save URL mappings to localStorage.', e);
+            loggingService.error('storage', 'Failed to save mappings to localStorage.', e);
         }
     },
-    addMapping: (mapping) => {
-        const mappings = urlService.getAllMappings();
-        mappings.push(mapping);
-        urlService.saveAllMappings(mappings);
+    // Adds a new mapping to the existing list.
+    add: (newMapping) => {
+        const allMappings = urlPersistenceService.getAll();
+        urlPersistenceService.saveAll([...allMappings, newMapping]);
     },
-    findMappingByShortcode: (shortcode) => {
-        const mappings = urlService.getAllMappings();
-        const mapping = mappings.find(m => m.id === shortcode);
-        if (mapping) {
-            loggingMiddleware.info('api', `Found mapping for shortcode: ${shortcode}`);
-        } else {
-            loggingMiddleware.warn('api', `No mapping found for shortcode: ${shortcode}`);
+    // Finds a specific mapping by its unique shortcode.
+    findByShortcode: (shortcode) => {
+        const mapping = urlPersistenceService.getAll().find(m => m.id === shortcode);
+        if (!mapping) {
+            loggingService.warn('storage', `No mapping found for shortcode: ${shortcode}`);
         }
         return mapping;
     },
-    isShortcodeTaken: (shortcode) => {
-        const mappings = urlService.getAllMappings();
-        return mappings.some(m => m.id === shortcode);
-    },
+    // Checks if a custom shortcode is already in use.
+    isShortcodeTaken: (shortcode) => urlPersistenceService.getAll().some(m => m.id === shortcode),
+    // Records a click event for a specific link.
     recordClick: (shortcode) => {
-        const mappings = urlService.getAllMappings();
+        const mappings = urlPersistenceService.getAll();
         const mappingIndex = mappings.findIndex(m => m.id === shortcode);
-        if (mappingIndex > -1) {
+
+        if (mappingIndex !== -1) {
             const mapping = mappings[mappingIndex];
-            mapping.clicks += 1;
+            mapping.clicks++;
             mapping.clickDetails.push({
                 timestamp: new Date().toISOString(),
-                source: document.referrer || 'Direct',
-                location: 'Not Available', // As per design doc, geo-location is a placeholder
+                source: document.referrer || 'Direct Access',
+                location: 'N/A', // Geo-location is a placeholder as per design.
             });
-            mappings[mappingIndex] = mapping;
-            urlService.saveAllMappings(mappings);
-            loggingMiddleware.info('api', `Click recorded for shortcode: ${shortcode}`);
+            urlPersistenceService.saveAll(mappings);
+            loggingService.info('analytics', `Click recorded for: ${shortcode}`);
             return mapping.longUrl;
         }
-        loggingMiddleware.warn('api', `Attempted to record click for non-existent shortcode: ${shortcode}`);
         return null;
     },
 };
 
 // --- Helper Functions ---
 const generateShortcode = (length = 6) => {
-    loggingMiddleware.info('api', 'Generating a new shortcode.');
-    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    loggingService.info('utils', 'Generating a new shortcode.');
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
     let result = '';
-    for (let i = 0; i < length; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    // Ensure uniqueness, though collision is highly unlikely
-    if (urlService.isShortcodeTaken(result)) {
-        loggingMiddleware.warn('api', `Generated shortcode ${result} already exists. Regenerating.`);
-        return generateShortcode(length);
-    }
-    loggingMiddleware.info('api', `Generated unique shortcode: ${result}`);
+    do {
+        result = '';
+        for (let i = 0; i < length; i++) {
+            result += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+    } while (urlPersistenceService.isShortcodeTaken(result)); // Ensures it's always unique.
+    loggingService.info('utils', `Generated unique shortcode: ${result}`);
     return result;
 };
 
 const isValidUrl = (string) => {
     try {
-        new URL(string);
-        return true;
+        const url = new URL(string);
+        return url.protocol === "http:" || url.protocol === "https:";
     } catch (_) {
         return false;
     }
 };
 
-// --- MUI Theme ---
-const theme = createTheme({
+// --- Application Theme ---
+const appTheme = createTheme({
     palette: {
-        primary: {
-            main: '#1976d2',
-        },
-        secondary: {
-            main: '#dc004e',
-        },
-        background: {
-            default: '#f4f6f8',
-            paper: '#ffffff',
-        },
+        mode: 'light',
+        primary: { main: '#0052cc' },
+        secondary: { main: '#de350b' },
+        background: { default: '#f4f5f7', paper: '#ffffff' },
     },
-    typography: {
-        fontFamily: 'Roboto, Arial, sans-serif',
-        h4: {
-            fontWeight: 600,
-        },
-        h5: {
-            fontWeight: 500,
-        },
+    typography: { fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" },
+    components: {
+        MuiButton: { styleOverrides: { root: { borderRadius: 8, textTransform: 'none', fontWeight: 600 } } },
+        MuiPaper: { styleOverrides: { root: { borderRadius: 12 } } },
+        MuiTextField: { defaultProps: { variant: 'outlined' }, styleOverrides: { root: { borderRadius: 8 } } },
     },
 });
 
-// --- Components ---
+// --- UI Components ---
 
-// App Layout with Header Navigation
+// A simple notification component for user feedback.
+function Notification({ message, open, onClose }) {
+    return (
+        <Snackbar open={open} autoHideDuration={3000} onClose={onClose} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
+            <Alert onClose={onClose} severity="success" sx={{ width: '100%', boxShadow: 3 }}>
+                {message}
+            </Alert>
+        </Snackbar>
+    );
+}
+
+// The main layout wrapper with header and footer.
 function AppLayout({ children }) {
     const location = useLocation();
+    const isSelected = (path) => location.pathname === path;
 
     return (
-        <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', bgcolor: 'background.default' }}>
-            <AppBar position="static">
-                <Toolbar>
-                    <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-                        URL Shortener
-                    </Typography>
-                    <Button
-                        color="inherit"
-                        component={RouterLink}
-                        to="/"
-                        variant={location.pathname === '/' ? 'outlined' : 'text'}
-                    >
-                        Shorten URL
-                    </Button>
-                    <Button
-                        color="inherit"
-                        component={RouterLink}
-                        to="/stats"
-                        sx={{ ml: 2 }}
-                        variant={location.pathname === '/stats' ? 'outlined' : 'text'}
-                    >
-                        Statistics
-                    </Button>
-                </Toolbar>
+        <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+            <AppBar position="sticky" elevation={1} sx={{ bgcolor: 'background.paper', color: 'text.primary' }}>
+                <Container maxWidth="lg">
+                    <Toolbar disableGutters>
+                        <Typography variant="h6" fontWeight="bold" sx={{ flexGrow: 1 }}>
+                            Short.ly
+                        </Typography>
+                        <Button component={RouterLink} to="/" variant={isSelected('/') ? 'contained' : 'text'}>Shorten</Button>
+                        <Button component={RouterLink} to="/stats" sx={{ ml: 1 }} variant={isSelected('/stats') ? 'contained' : 'text'}>Statistics</Button>
+                    </Toolbar>
+                </Container>
             </AppBar>
-            <Container component="main" sx={{ mt: 4, mb: 4, flexGrow: 1 }}>
-                {children}
-            </Container>
-            <Box component="footer" sx={{ p: 2, bgcolor: 'primary.main', color: 'white', textAlign: 'center' }}>
-                <Typography variant="body2">
-                    React URL Shortener &copy; {new Date().getFullYear()}
-                </Typography>
+            <Box component="main" sx={{ flexGrow: 1, py: { xs: 3, md: 5 } }}>
+                <Container maxWidth="lg">{children}</Container>
             </Box>
         </Box>
     );
 }
 
-
-// Page for shortening URLs
+// --- URL Shortener Page ---
 function ShortenerPage() {
-    const initialInput = { id: uuidv4(), longUrl: '', validity: '30', customShortcode: '', error: '' };
-    const [inputs, setInputs] = useState([initialInput]);
+    const [inputs, setInputs] = useState([{ id: uuidv4(), longUrl: '', validity: '30', customShortcode: '', error: '' }]);
     const [results, setResults] = useState([]);
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [notification, setNotification] = useState({ open: false, message: '' });
 
     useEffect(() => {
-        loggingMiddleware.info('page', 'ShortenerPage mounted.');
+        loggingService.info('page', 'ShortenerPage loaded.');
     }, []);
 
-    const handleInputChange = (id, event) => {
-        const { name, value } = event.target;
-        setInputs(inputs.map(input =>
-            input.id === id ? { ...input, [name]: value, error: '' } : input
-        ));
+    const handleInputChange = (id, field, value) => {
+        setInputs(currentInputs =>
+            currentInputs.map(input => (input.id === id ? { ...input, [field]: value, error: '' } : input))
+        );
     };
 
     const addInput = () => {
         if (inputs.length < 5) {
-            loggingMiddleware.info('component', 'Adding a new URL input field.');
+            loggingService.info('component', 'Adding a new URL input field.');
             setInputs([...inputs, { id: uuidv4(), longUrl: '', validity: '30', customShortcode: '', error: '' }]);
-        } else {
-            loggingMiddleware.warn('component', 'Attempted to add more than 5 URL fields.');
         }
     };
 
     const removeInput = (id) => {
         if (inputs.length > 1) {
-            loggingMiddleware.info('component', `Removing URL input field with id: ${id}`);
+            loggingService.info('component', `Removing URL input field with id: ${id}`);
             setInputs(inputs.filter(input => input.id !== id));
         }
     };
 
-    const validateInputs = () => {
-        let isValid = true;
-        const updatedInputs = inputs.map(input => {
-            if (!input.longUrl.trim()) {
-                isValid = false;
-                return { ...input, error: 'Original URL is required.' };
-            }
+    const validateAndSubmit = (event) => {
+        event.preventDefault();
+        loggingService.info('component', 'Form submission initiated.');
+        let allValid = true;
+        const validatedInputs = inputs.map(input => {
             if (!isValidUrl(input.longUrl)) {
-                isValid = false;
+                allValid = false;
                 return { ...input, error: 'Please enter a valid URL (e.g., https://example.com).' };
             }
-            if (input.customShortcode && !/^[a-zA-Z0-9_-]+$/.test(input.customShortcode)) {
-                 isValid = false;
-                return { ...input, error: 'Custom shortcode can only contain letters, numbers, hyphens, and underscores.' };
+            if (input.customShortcode && !/^[a-zA-Z0-9_-]{3,16}$/.test(input.customShortcode)) {
+                allValid = false;
+                return { ...input, error: 'Shortcode must be 3-16 alphanumeric characters.' };
             }
-            if (input.customShortcode && urlService.isShortcodeTaken(input.customShortcode)) {
-                isValid = false;
+            if (input.customShortcode && urlPersistenceService.isShortcodeTaken(input.customShortcode)) {
+                allValid = false;
                 return { ...input, error: `Shortcode "${input.customShortcode}" is already taken.` };
-            }
-            if (input.validity && (!/^\d+$/.test(input.validity) || parseInt(input.validity) <= 0)) {
-                isValid = false;
-                return { ...input, error: 'Validity must be a positive number of minutes.' };
             }
             return input;
         });
 
-        setInputs(updatedInputs);
-        if (!isValid) {
-            loggingMiddleware.warn('component', 'Input validation failed.');
+        setInputs(validatedInputs);
+
+        if (allValid) {
+            loggingService.info('state', 'Validation successful. Processing URLs.');
+            setIsSubmitting(true);
+            // Simulate API call latency
+            setTimeout(() => {
+                const newResults = inputs.map(input => {
+                    const shortcode = input.customShortcode.trim() || generateShortcode();
+                    const newMapping = {
+                        id: shortcode,
+                        longUrl: input.longUrl,
+                        shortUrl: `${window.location.origin}${window.location.pathname}#/${shortcode}`,
+                        createdAt: new Date().toISOString(),
+                        expiresAt: new Date(Date.now() + (parseInt(input.validity, 10) || 30) * 60 * 1000).toISOString(),
+                        clicks: 0,
+                        clickDetails: [],
+                    };
+                    urlPersistenceService.add(newMapping);
+                    return { ...newMapping, original: input.longUrl };
+                });
+                setResults(newResults);
+                setIsSubmitting(false);
+                setInputs([{ id: uuidv4(), longUrl: '', validity: '30', customShortcode: '', error: '' }]);
+            }, 500);
+        } else {
+            loggingService.warn('component', 'Input validation failed.');
         }
-        return isValid;
-    };
-
-
-    const handleSubmit = (event) => {
-        event.preventDefault();
-        loggingMiddleware.info('component', 'Submit button clicked.');
-        setResults([]);
-
-        if (!validateInputs()) {
-            return;
-        }
-
-        setIsSubmitting(true);
-        loggingMiddleware.info('state', 'Starting URL shortening process for multiple inputs.');
-
-        // Simulate async operation
-        setTimeout(() => {
-            const newResults = [];
-            inputs.forEach(input => {
-                const shortcode = input.customShortcode.trim() || generateShortcode();
-                const validityMinutes = parseInt(input.validity, 10) || 30;
-                const creationDate = new Date();
-                const expiryDate = new Date(creationDate.getTime() + validityMinutes * 60 * 1000);
-
-                const newMapping = {
-                    id: shortcode,
-                    longUrl: input.longUrl,
-                    shortUrl: `${window.location.origin}${window.location.pathname}#/${shortcode}`,
-                    createdAt: creationDate.toISOString(),
-                    expiresAt: expiryDate.toISOString(),
-                    clicks: 0,
-                    clickDetails: [],
-                };
-
-                urlService.addMapping(newMapping);
-                newResults.push({ ...newMapping, original: input.longUrl });
-                loggingMiddleware.info('state', `Successfully created mapping: ${input.longUrl} -> ${newMapping.shortUrl}`);
-            });
-            
-            setResults(newResults);
-            setIsSubmitting(false);
-            setInputs([initialInput]); // Reset form
-        }, 500);
     };
 
     const handleCopy = (text) => {
         navigator.clipboard.writeText(text);
-        loggingMiddleware.info('component', `Copied to clipboard: ${text}`);
+        setNotification({ open: true, message: 'Copied to clipboard!' });
+        loggingService.info('component', `Copied text: ${text}`);
     };
 
     return (
-        <Paper elevation={3} sx={{ p: 4, borderRadius: 2 }}>
-            <Typography variant="h4" gutterBottom align="center">
-                Create Short URLs
-            </Typography>
-            <Typography variant="body1" color="text.secondary" align="center" sx={{ mb: 4 }}>
-                Enter up to 5 long URLs to create shortened versions.
-            </Typography>
-
-            <form onSubmit={handleSubmit}>
-                <Grid container spacing={2}>
-                    {inputs.map((input, index) => (
-                        <React.Fragment key={input.id}>
-                            <Grid item xs={12}>
-                                <Typography variant="h6" component="div" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
-                                    URL #{index + 1}
-                                    {inputs.length > 1 && (
-                                        <IconButton onClick={() => removeInput(input.id)} color="secondary" size="small" sx={{ ml: 1 }}>
-                                            <DeleteIcon />
-                                        </IconButton>
-                                    )}
-                                </Typography>
-                            </Grid>
-                            <Grid item xs={12}>
-                                <TextField
-                                    fullWidth
-                                    label="Original Long URL"
-                                    name="longUrl"
-                                    value={input.longUrl}
-                                    onChange={(e) => handleInputChange(input.id, e)}
-                                    variant="outlined"
-                                    required
-                                    error={!!input.error}
-                                    helperText={input.error || "e.g., https://www.google.com"}
-                                />
-                            </Grid>
-                            <Grid item xs={12} sm={6}>
-                                <TextField
-                                    fullWidth
-                                    label="Optional: Custom Shortcode"
-                                    name="customShortcode"
-                                    value={input.customShortcode}
-                                    onChange={(e) => handleInputChange(input.id, e)}
-                                    variant="outlined"
-                                    helperText="Leave blank for random"
-                                />
-                            </Grid>
-                            <Grid item xs={12} sm={6}>
-                                <TextField
-                                    fullWidth
-                                    label="Optional: Validity (minutes)"
-                                    name="validity"
-                                    type="number"
-                                    value={input.validity}
-                                    onChange={(e) => handleInputChange(input.id, e)}
-                                    variant="outlined"
-                                    helperText="Defaults to 30 minutes"
-                                />
-                            </Grid>
-                        </React.Fragment>
-                    ))}
-                </Grid>
-
-                <Box sx={{ mt: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-                     <Button
-                        type="button"
-                        onClick={addInput}
-                        disabled={inputs.length >= 5}
-                        startIcon={<AddCircleOutlineIcon />}
-                        variant="text"
-                    >
-                        Add Another URL
-                    </Button>
-                    <Button
-                        type="submit"
-                        variant="contained"
-                        size="large"
-                        disabled={isSubmitting}
-                        sx={{ minWidth: '150px' }}
-                    >
-                         {isSubmitting ? <CircularProgress size={24} color="inherit" /> : 'Shorten URLs'}
-                    </Button>
-                </Box>
-            </form>
-
+        <>
+            <Paper elevation={0} sx={{ p: { xs: 2, md: 4 }, border: '1px solid #dfe1e6' }}>
+                <Typography variant="h4" fontWeight="bold" align="center">Create Short Links</Typography>
+                <Typography color="text.secondary" align="center" sx={{ mt: 1, mb: 4 }}>
+                    Shorten up to 5 URLs at once. Links are active for a specified duration.
+                </Typography>
+                <form onSubmit={validateAndSubmit}>
+                    <Grid container spacing={2}>
+                        <AnimatePresence>
+                            {inputs.map((input, index) => (
+                                <Grid item xs={12} key={input.id} component={motion.div} layout initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, x: -20 }}>
+                                    <Box sx={{ p: 2, border: '1px solid #eee', borderRadius: 2, position: 'relative' }}>
+                                        {inputs.length > 1 && (
+                                            <Tooltip title="Remove URL">
+                                                <IconButton onClick={() => removeInput(input.id)} size="small" sx={{ position: 'absolute', top: 8, right: 8 }}>
+                                                    <DeleteIcon fontSize="small" />
+                                                </IconButton>
+                                            </Tooltip>
+                                        )}
+                                        <TextField fullWidth label={`Original Long URL #${index + 1}`} name="longUrl" value={input.longUrl} onChange={(e) => handleInputChange(input.id, 'longUrl', e.target.value)} required error={!!input.error} helperText={input.error} />
+                                        <Grid container spacing={2} sx={{ mt: 0.5 }}>
+                                            <Grid item xs={12} sm={6}>
+                                                <TextField fullWidth label="Custom Shortcode (Optional)" name="customShortcode" value={input.customShortcode} onChange={(e) => handleInputChange(input.id, 'customShortcode', e.target.value)} />
+                                            </Grid>
+                                            <Grid item xs={12} sm={6}>
+                                                <TextField fullWidth label="Validity (minutes)" name="validity" type="number" value={input.validity} onChange={(e) => handleInputChange(input.id, 'validity', e.target.value)} />
+                                            </Grid>
+                                        </Grid>
+                                    </Box>
+                                </Grid>
+                            ))}
+                        </AnimatePresence>
+                    </Grid>
+                    <Box sx={{ mt: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Button onClick={addInput} disabled={inputs.length >= 5} startIcon={<AddCircleOutlineIcon />}>Add URL</Button>
+                        <Button type="submit" variant="contained" size="large" disabled={isSubmitting}>
+                            {isSubmitting ? <CircularProgress size={24} color="inherit" /> : 'Shorten Links'}
+                        </Button>
+                    </Box>
+                </form>
+            </Paper>
             {results.length > 0 && (
-                <Box sx={{ mt: 5 }}>
-                    <Typography variant="h5" gutterBottom>
-                        Your Shortened URLs
-                    </Typography>
-                    {results.map((result, index) => (
-                        <Paper key={index} variant="outlined" sx={{ p: 2, mt: 2, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
-                            <Box sx={{ flexGrow: 1, wordBreak: 'break-all' }}>
-                                <Typography variant="body2" color="text.secondary">
-                                    Original: {result.original.length > 60 ? `${result.original.substring(0, 60)}...` : result.original}
-                                </Typography>
-                                <Link component={RouterLink} to={`/${result.id}`} target="_blank" rel="noopener noreferrer" variant="h6">
-                                    {result.shortUrl}
-                                </Link>
-                                <Typography variant="caption" display="block">
-                                    Expires: {new Date(result.expiresAt).toLocaleString()}
-                                </Typography>
+                <Box sx={{ mt: 4 }}>
+                    <Typography variant="h5" fontWeight="bold" sx={{ mb: 2 }}>Your Links are Ready</Typography>
+                    {results.map(result => (
+                        <Paper key={result.id} variant="outlined" sx={{ p: 2, mb: 2, display: 'flex', alignItems: 'center' }}>
+                            <Box sx={{ flexGrow: 1, overflow: 'hidden' }}>
+                                <Typography noWrap color="text.secondary" title={result.original}>Original: {result.original}</Typography>
+                                <Link component={RouterLink} to={`/${result.id}`} target="_blank" variant="h6">{result.shortUrl}</Link>
+                                <Typography variant="caption" display="block">Expires: {new Date(result.expiresAt).toLocaleString()}</Typography>
                             </Box>
-                            <IconButton onClick={() => handleCopy(result.shortUrl)} title="Copy short URL">
-                                <ContentCopyIcon />
-                            </IconButton>
+                            <Tooltip title="Copy Short Link">
+                                <IconButton onClick={() => handleCopy(result.shortUrl)}><ContentCopyIcon /></IconButton>
+                            </Tooltip>
                         </Paper>
                     ))}
                 </Box>
             )}
-        </Paper>
+            <Notification open={notification.open} message={notification.message} onClose={() => setNotification({ ...notification, open: false })} />
+        </>
     );
 }
 
-// Page for displaying statistics
+
+// --- Statistics Page ---
+function StatsTableRow({ row }) {
+    const [open, setOpen] = useState(false);
+    return (
+        <>
+            <TableRow sx={{ '& > *': { borderBottom: 'unset' } }}>
+                <TableCell>
+                    <Link component={RouterLink} to={`/${row.id}`} target="_blank">{row.shortUrl}</Link>
+                    <Typography variant="caption" display="block" color="text.secondary" noWrap sx={{ maxWidth: '250px' }}>{row.longUrl}</Typography>
+                </TableCell>
+                <TableCell align="center">{row.clicks}</TableCell>
+                <TableCell>{new Date(row.createdAt).toLocaleDateString()}</TableCell>
+                <TableCell>{new Date(row.expiresAt).toLocaleString()}</TableCell>
+                <TableCell>
+                    <IconButton size="small" onClick={() => setOpen(!open)} disabled={row.clicks === 0}>
+                        <ExpandMoreIcon style={{ transform: open ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
+                    </IconButton>
+                </TableCell>
+            </TableRow>
+            <TableRow>
+                <TableCell style={{ paddingBottom: 0, paddingTop: 0 }} colSpan={5}>
+                    <Collapse in={open} timeout="auto" unmountOnExit>
+                        <Box sx={{ m: 1 }}>
+                            <Typography variant="h6" gutterBottom>Click History</Typography>
+                            <Table size="small">
+                                <TableHead>
+                                    <TableRow>
+                                        <TableCell>Timestamp</TableCell>
+                                        <TableCell>Source (Referrer)</TableCell>
+                                    </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                    {row.clickDetails.map((detail, index) => (
+                                        <TableRow key={index}>
+                                            <TableCell>{new Date(detail.timestamp).toLocaleString()}</TableCell>
+                                            <TableCell>{detail.source}</TableCell>
+                                        </TableRow>
+                                    ))}
+                                </TableBody>
+                            </Table>
+                        </Box>
+                    </Collapse>
+                </TableCell>
+            </TableRow>
+        </>
+    );
+}
+
 function StatisticsPage() {
     const [mappings, setMappings] = useState([]);
     const [order, setOrder] = useState('desc');
     const [orderBy, setOrderBy] = useState('createdAt');
-    const [expandedRow, setExpandedRow] = useState(null);
 
     useEffect(() => {
-        loggingMiddleware.info('page', 'StatisticsPage mounted.');
-        const allMappings = urlService.getAllMappings();
-        // Check for and filter out expired URLs
-        const now = new Date();
-        const activeMappings = allMappings.filter(m => new Date(m.expiresAt) > now);
-        if (activeMappings.length !== allMappings.length) {
-            const expiredCount = allMappings.length - activeMappings.length;
-            loggingMiddleware.info('state', `Filtered out ${expiredCount} expired URLs.`);
-            urlService.saveAllMappings(activeMappings);
+        loggingService.info('page', 'StatisticsPage loaded.');
+        const allMappings = urlPersistenceService.getAll();
+        const activeMappings = allMappings.filter(m => new Date(m.expiresAt) > new Date());
+        if (activeMappings.length < allMappings.length) {
+            loggingService.info('state', `Pruned ${allMappings.length - activeMappings.length} expired links.`);
+            urlPersistenceService.saveAll(activeMappings);
         }
         setMappings(activeMappings);
     }, []);
 
-    const handleRequestSort = (property) => {
+    const handleSort = (property) => {
         const isAsc = orderBy === property && order === 'asc';
-        const newOrder = isAsc ? 'desc' : 'asc';
-        setOrder(newOrder);
+        setOrder(isAsc ? 'desc' : 'asc');
         setOrderBy(property);
-        loggingMiddleware.info('component', `Sorting statistics by ${property} in ${newOrder} order.`);
+        loggingService.info('component', `Sorting stats by ${property} in ${isAsc ? 'desc' : 'asc'} order.`);
     };
 
     const sortedMappings = useMemo(() => {
         return [...mappings].sort((a, b) => {
-            let aVal = a[orderBy];
-            let bVal = b[orderBy];
-
-            if (orderBy === 'createdAt' || orderBy === 'expiresAt') {
-                aVal = new Date(aVal);
-                bVal = new Date(bVal);
-            }
-
+            const isDate = ['createdAt', 'expiresAt'].includes(orderBy);
+            const aVal = isDate ? new Date(a[orderBy]) : a[orderBy];
+            const bVal = isDate ? new Date(b[orderBy]) : b[orderBy];
             if (bVal < aVal) return order === 'asc' ? 1 : -1;
             if (bVal > aVal) return order === 'asc' ? -1 : 1;
             return 0;
         });
     }, [mappings, order, orderBy]);
 
-    const handleRowClick = (shortcode) => {
-        const newExpandedRow = expandedRow === shortcode ? null : shortcode;
-        setExpandedRow(newExpandedRow);
-        const action = newExpandedRow ? 'Expanded' : 'Collapsed';
-        loggingMiddleware.info('component', `${action} click details for ${shortcode}`);
-    }
-
     return (
-        <Paper elevation={3} sx={{ p: 4, borderRadius: 2 }}>
-            <Typography variant="h4" gutterBottom align="center">
-                URL Statistics
+        <Paper elevation={0} sx={{ p: { xs: 2, md: 4 }, border: '1px solid #dfe1e6' }}>
+            <Typography variant="h4" fontWeight="bold" align="center">URL Statistics</Typography>
+            <Typography color="text.secondary" align="center" sx={{ mt: 1, mb: 4 }}>
+                Review the performance of your active short links.
             </Typography>
             {mappings.length === 0 ? (
-                 <Typography align="center" color="text.secondary" sx={{ mt: 4 }}>
-                    No shortened URLs found. Create some on the main page!
-                 </Typography>
+                <Typography align="center" sx={{ mt: 5 }}>No active links found. Go ahead and create one!</Typography>
             ) : (
                 <TableContainer>
                     <Table>
                         <TableHead>
                             <TableRow>
-                                <TableCell sortDirection={orderBy === 'shortUrl' ? order : false}>
-                                    <TableSortLabel active={orderBy === 'shortUrl'} direction={orderBy === 'shortUrl' ? order : 'asc'} onClick={() => handleRequestSort('shortUrl')}>
-                                        Short URL
-                                    </TableSortLabel>
-                                </TableCell>
-                                <TableCell sortDirection={orderBy === 'clicks' ? order : false}>
-                                    <TableSortLabel active={orderBy === 'clicks'} direction={orderBy === 'clicks' ? order : 'asc'} onClick={() => handleRequestSort('clicks')}>
-                                        Clicks
-                                    </TableSortLabel>
-                                </TableCell>
-                                 <TableCell sortDirection={orderBy === 'createdAt' ? order : false}>
-                                    <TableSortLabel active={orderBy === 'createdAt'} direction={orderBy === 'createdAt' ? order : 'asc'} onClick={() => handleRequestSort('createdAt')}>
-                                        Created At
-                                    </TableSortLabel>
-                                </TableCell>
-                                <TableCell sortDirection={orderBy === 'expiresAt' ? order : false}>
-                                    <TableSortLabel active={orderBy === 'expiresAt'} direction={orderBy === 'expiresAt' ? order : 'asc'} onClick={() => handleRequestSort('expiresAt')}>
-                                        Expires At
-                                    </TableSortLabel>
-                                </TableCell>
+                                {['shortUrl', 'clicks', 'createdAt', 'expiresAt'].map(headCell => (
+                                    <TableCell key={headCell} sortDirection={orderBy === headCell ? order : false} align={headCell === 'clicks' ? 'center' : 'left'}>
+                                        <TableSortLabel active={orderBy === headCell} direction={orderBy === headCell ? order : 'asc'} onClick={() => handleSort(headCell)}>
+                                            {headCell.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase())}
+                                        </TableSortLabel>
+                                    </TableCell>
+                                ))}
+                                <TableCell />
                             </TableRow>
                         </TableHead>
                         <TableBody>
-                            {sortedMappings.map((row) => (
-                                <React.Fragment key={row.id}>
-                                    <TableRow
-                                        hover
-                                        onClick={() => row.clicks > 0 && handleRowClick(row.id)}
-                                        sx={{ cursor: row.clicks > 0 ? 'pointer' : 'default', '& > *': { borderBottom: 'unset' } }}
-                                    >
-                                        <TableCell>
-                                            <Link component={RouterLink} to={`/${row.id}`} target="_blank" rel="noopener noreferrer">{row.shortUrl}</Link>
-                                            <Typography variant="caption" display="block" color="text.secondary" sx={{maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>
-                                                {row.longUrl}
-                                            </Typography>
-                                        </TableCell>
-                                        <TableCell>{row.clicks}</TableCell>
-                                        <TableCell>{new Date(row.createdAt).toLocaleString()}</TableCell>
-                                        <TableCell>{new Date(row.expiresAt).toLocaleString()}</TableCell>
-                                    </TableRow>
-                                    <TableRow>
-                                        <TableCell style={{ paddingBottom: 0, paddingTop: 0 }} colSpan={6}>
-                                            <Collapse in={expandedRow === row.id} timeout="auto" unmountOnExit>
-                                                <Box sx={{ margin: 1 }}>
-                                                    <Typography variant="h6" gutterBottom component="div">
-                                                        Click History for "{row.id}"
-                                                    </Typography>
-                                                    <Table size="small">
-                                                        <TableHead>
-                                                            <TableRow>
-                                                                <TableCell>Timestamp</TableCell>
-                                                                <TableCell>Source (Referrer)</TableCell>
-                                                                <TableCell>Location</TableCell>
-                                                            </TableRow>
-                                                        </TableHead>
-                                                        <TableBody>
-                                                            {row.clickDetails.map((detail, index) => (
-                                                                <TableRow key={index}>
-                                                                    <TableCell>{new Date(detail.timestamp).toLocaleString()}</TableCell>
-                                                                    <TableCell>{detail.source}</TableCell>
-                                                                    <TableCell>{detail.location}</TableCell>
-                                                                </TableRow>
-                                                            ))}
-                                                        </TableBody>
-                                                    </Table>
-                                                </Box>
-                                            </Collapse>
-                                        </TableCell>
-                                    </TableRow>
-                                </React.Fragment>
-                            ))}
+                            {sortedMappings.map(row => <StatsTableRow key={row.id} row={row} />)}
                         </TableBody>
                     </Table>
                 </TableContainer>
@@ -636,68 +468,51 @@ function StatisticsPage() {
     );
 }
 
-// Component to handle redirection
+// --- Redirect Handler ---
 function RedirectHandler() {
     const { shortcode } = useParams();
-    const navigate = useNavigate();
-    const [error, setError] = useState('');
+    const [status, setStatus] = useState({ loading: true, error: '' });
 
     useEffect(() => {
-        loggingMiddleware.info('page', `RedirectHandler trying to process shortcode: ${shortcode}`);
-        const mapping = urlService.findMappingByShortcode(shortcode);
+        loggingService.info('page', `Redirecting for shortcode: ${shortcode}`);
+        const mapping = urlPersistenceService.findByShortcode(shortcode);
 
         if (!mapping) {
-            loggingMiddleware.error('api', `Shortcode not found: ${shortcode}`);
-            setError(`The short link for "${shortcode}" was not found.`);
+            setStatus({ loading: false, error: `The link "${shortcode}" was not found.` });
             return;
         }
 
         if (new Date(mapping.expiresAt) < new Date()) {
-            loggingMiddleware.error('api', `Shortcode has expired: ${shortcode}`);
-            setError(`This short link has expired as of ${new Date(mapping.expiresAt).toLocaleString()}.`);
-            // Clean up expired link
-            const all = urlService.getAllMappings();
-            urlService.saveAllMappings(all.filter(m => m.id !== shortcode));
+            setStatus({ loading: false, error: 'This link has expired.' });
             return;
         }
 
-        const longUrl = urlService.recordClick(shortcode);
-        loggingMiddleware.info('page', `Redirecting to: ${longUrl}`);
+        const longUrl = urlPersistenceService.recordClick(shortcode);
         window.location.href = longUrl;
+    }, [shortcode]);
 
-    }, [shortcode, navigate]);
-
-    if (error) {
+    if (status.error) {
         return (
-             <Paper elevation={3} sx={{ p: 4, borderRadius: 2, textAlign: 'center' }}>
-                <Typography variant="h4" color="error" gutterBottom>
-                    Redirect Failed
-                </Typography>
-                <Typography variant="body1">
-                    {error}
-                </Typography>
-                 <Button component={RouterLink} to="/" variant="contained" sx={{mt: 3}}>
-                     Go to Homepage
-                 </Button>
+            <Paper sx={{ p: 4, textAlign: 'center' }}>
+                <Typography variant="h5" color="error" gutterBottom>Redirect Failed</Typography>
+                <Typography>{status.error}</Typography>
+                <Button component={RouterLink} to="/" variant="contained" sx={{ mt: 3 }}>Go to Homepage</Button>
             </Paper>
         );
     }
 
     return (
-        <Box sx={{ textAlign: 'center', p: 4 }}>
+        <Box sx={{ textAlign: 'center', p: 5 }}>
             <CircularProgress />
-            <Typography variant="h6" sx={{ mt: 2 }}>
-                Redirecting...
-            </Typography>
+            <Typography sx={{ mt: 2 }}>Redirecting you now...</Typography>
         </Box>
     );
 }
 
-
-// Main App component
+// --- Main App Component ---
 export default function App() {
     return (
-        <ThemeProvider theme={theme}>
+        <ThemeProvider theme={appTheme}>
             <Router>
                 <AppLayout>
                     <Routes>
