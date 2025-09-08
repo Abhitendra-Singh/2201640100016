@@ -25,11 +25,30 @@ import {
 } from '@mui/icons-material';
 import { motion, AnimatePresence } from 'framer-motion';
 
+// --- CHANGE: Hardcoded Authorization Token ---
+// This is your secret token. For evaluation purposes only.
+const HARDCODED_AUTH_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJNYXBDbGFpbXMiOnsiYXVkIjoiaHR0cDovLzIwLjI0NC41Ni4xNDQvZXZhbHVhdGlvbi1zZXJ2aWNlIiwiZW1haWwiOiJhYmhpdGVuZHJhc2luZ2gyMDAzQGdtYWlsLmNvbSIsImV4cCI6MTc1NzMyMzAzMiwiaWF0IjoxNzU3MzIyMTMyLCJpc3MiOiJBZmZvcmQgTWVkaWNhbCBUZWNobm9sb2dpZXMgUHJpdmF0ZSBMaW1pdGVkIiwianRpIjoiNjJjNzEwYWItNWQzMy00MzQ5LWEyMGQtZWRkMTQ0NjBkZjRiIiwibG9jYWxlIjoiZW4tSU4iLCJuYW1lIjoiYWJoaXRlbmRyYSBzaW5naCIsInN1YiI6ImRmNDk0YmU4LTdlZDMtNGYyNS1iOWI1LWQyZWEyY2M0MzEzOSJ9LCJlbWFpbCI6ImFiaGl0ZW5kcmFzaW5naDIwMDNAZ21haWwuY29tIiwibmFtZSI6ImFiaGl0ZW5kcmEgc2luZ2giLCJyb2xsTm8iOiIyMjAxNjQwMTAwMDE2IiwiYWNjZXNzQ29kZSI6InNBV1R1UiIsImNsaWVudElEIjoiZGY0OTRiZTgtN2VkMy00ZjI1LWI5YjUtZDJlYTJjYzQzMTM5IiwiY2xpZW50U2VjcmV0IjoidlVOQkdxU2tnUEhTeUpmUSJ9.AjTw7b801348moShwXp1olu9BpaWYmZZzVLn9O7i-k0";
+// --- END OF CHANGE ---
+
 // --- Custom Logging Middleware (Mandatory Requirement) ---
-// This service is responsible for sending logs to the external server.
 const loggingService = {
     log: async (level, pkg, message) => {
         const LOG_API_URL = 'http://20.244.56.144/evaluation-service/logs';
+        
+        // --- CHANGE: Use the hardcoded token instead of localStorage ---
+        const token = HARDCODED_AUTH_TOKEN;
+        // --- END OF CHANGE ---
+
+        if (!token) {
+            console.log("[Logger Error] Auth Token not found. Cannot send log.");
+            return; 
+        }
+
+        const headers = {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+        };
+
         const logPayload = {
             stack: 'frontend',
             level,
@@ -40,13 +59,11 @@ const loggingService = {
         try {
             const response = await fetch(LOG_API_URL, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: headers,
                 body: JSON.stringify(logPayload),
             });
 
             if (!response.ok) {
-                // This console log is a fallback for developers to debug the logger itself
-                // if the API endpoint fails, as per the guidelines.
                 const errorBody = await response.text();
                 console.log(`[Logger Error] API call failed: ${response.status}`, { logPayload, errorBody });
             }
@@ -63,46 +80,39 @@ const loggingService = {
 };
 
 // --- URL Management Service ---
-// A dedicated service to handle all interactions with localStorage.
 const URL_STORAGE_KEY = 'shortener_links';
 const urlPersistenceService = {
-    // Fetches all link mappings from local storage.
     getAll: () => {
         try {
             const data = localStorage.getItem(URL_STORAGE_KEY);
             const mappings = data ? JSON.parse(data) : [];
-            loggingService.info('storage', `Retrieved ${mappings.length} mappings.`);
+            loggingService.info('utils', `Retrieved ${mappings.length} mappings.`);
             return mappings;
         } catch (e) {
-            loggingService.error('storage', 'Failed to parse mappings from localStorage.', e);
+            loggingService.error('utils', 'Failed to parse mappings from localStorage.', e);
             return [];
         }
     },
-    // Saves the entire list of mappings.
     saveAll: (mappings) => {
         try {
             localStorage.setItem(URL_STORAGE_KEY, JSON.stringify(mappings));
-            loggingService.info('storage', `Saved ${mappings.length} mappings.`);
+            loggingService.info('utils', `Saved ${mappings.length} mappings.`);
         } catch (e) {
-            loggingService.error('storage', 'Failed to save mappings to localStorage.', e);
+            loggingService.error('utils', 'Failed to save mappings to localStorage.', e);
         }
     },
-    // Adds a new mapping to the existing list.
     add: (newMapping) => {
         const allMappings = urlPersistenceService.getAll();
         urlPersistenceService.saveAll([...allMappings, newMapping]);
     },
-    // Finds a specific mapping by its unique shortcode.
     findByShortcode: (shortcode) => {
         const mapping = urlPersistenceService.getAll().find(m => m.id === shortcode);
         if (!mapping) {
-            loggingService.warn('storage', `No mapping found for shortcode: ${shortcode}`);
+            loggingService.warn('utils', `No mapping found for shortcode: ${shortcode}`);
         }
         return mapping;
     },
-    // Checks if a custom shortcode is already in use.
     isShortcodeTaken: (shortcode) => urlPersistenceService.getAll().some(m => m.id === shortcode),
-    // Records a click event for a specific link.
     recordClick: (shortcode) => {
         const mappings = urlPersistenceService.getAll();
         const mappingIndex = mappings.findIndex(m => m.id === shortcode);
@@ -113,10 +123,10 @@ const urlPersistenceService = {
             mapping.clickDetails.push({
                 timestamp: new Date().toISOString(),
                 source: document.referrer || 'Direct Access',
-                location: 'N/A', // Geo-location is a placeholder as per design.
+                location: 'N/A', 
             });
             urlPersistenceService.saveAll(mappings);
-            loggingService.info('analytics', `Click recorded for: ${shortcode}`);
+            loggingService.info('component', `Click recorded for: ${shortcode}`);
             return mapping.longUrl;
         }
         return null;
@@ -133,7 +143,7 @@ const generateShortcode = (length = 6) => {
         for (let i = 0; i < length; i++) {
             result += chars.charAt(Math.floor(Math.random() * chars.length));
         }
-    } while (urlPersistenceService.isShortcodeTaken(result)); // Ensures it's always unique.
+    } while (urlPersistenceService.isShortcodeTaken(result));
     loggingService.info('utils', `Generated unique shortcode: ${result}`);
     return result;
 };
@@ -165,7 +175,6 @@ const appTheme = createTheme({
 
 // --- UI Components ---
 
-// A simple notification component for user feedback.
 function Notification({ message, open, onClose }) {
     return (
         <Snackbar open={open} autoHideDuration={3000} onClose={onClose} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
@@ -176,7 +185,6 @@ function Notification({ message, open, onClose }) {
     );
 }
 
-// The main layout wrapper with header and footer.
 function AppLayout({ children }) {
     const location = useLocation();
     const isSelected = (path) => location.pathname === path;
@@ -257,7 +265,6 @@ function ShortenerPage() {
         if (allValid) {
             loggingService.info('state', 'Validation successful. Processing URLs.');
             setIsSubmitting(true);
-            // Simulate API call latency
             setTimeout(() => {
                 const newResults = inputs.map(input => {
                     const shortcode = input.customShortcode.trim() || generateShortcode();
@@ -525,4 +532,3 @@ export default function App() {
         </ThemeProvider>
     );
 }
-
